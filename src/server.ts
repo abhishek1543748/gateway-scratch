@@ -3,7 +3,7 @@ import type { Request, Response } from 'express';
 import { ChatCompletionSchema } from './schemas';
 import { BoundedQueue, QueueFullError, QueueTimeoutError } from './queue';
 import { initDb, logRequestMetrics } from './db';
-import { authenticateApiKey, AuthenticateRequest } from './auth';
+import { authenticateApiKey, AuthenticateRequest } from './auth.ts';
 
 const app = express();
 
@@ -36,8 +36,10 @@ app.get('/v1/models', async (_req: Request, res: Response) => {
     }
 });
 
-app.post('/v1/chat/completions', async (req: Request, res: Response) => {
+app.post('/v1/chat/completions', authenticateApiKey, async (req: AuthenticatedRequest, res: Response) => {
     const startTime = performance.now();
+    const apiKeyId = req.apiKey?.id ?? null;
+
 
     //validating the request body
     const parsed = ChatCompletionSchema.safeParse(req.body);
@@ -60,12 +62,18 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
         return res.status(500).json({ error: 'Queue error' });
     }
     const abortController = new AbortController();
+    //read abt this abortController and the req.on() thing
     req.on('close', () => {
         if(!res.writableEnded){
             console.warn('[Gateway] client disconnected! cancelling Ollama request');
             abortController.abort();
         }
     });
+
+    let promptTokens = 0;
+    let compleitonTokens = 0;
+    let ttftMs: number | null = null;
+    let statusCode = 200;
 
     try{
         const upstreamPayload = {
@@ -80,6 +88,7 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
         });
 
         if(!ollamaRes.ok || !ollamaRes.body){
+            statusCode = ollamaRes.status;
             const errText = await ollamaRes.text();
             return res.status(ollamaRes.status).send(errText);
         }
@@ -87,8 +96,10 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
         //mode A : Non streaming (stream : false)
         if(!body.stream){
             const json = await ollamaRes.json();
-            const totalMs = Math.round(performance.now() - startTime);
-            console.log(`[Non streaming completed in ${totalMs} ms]`);
+            promptTokens = json.usage?.prompt_tokens ?? 0;
+            compleitonTokens = json.usage?.completion-tokens ?? 0;
+            //const totalMs = Math.round(performance.now() - startTime);
+            //console.log(`[Non streaming completed in ${totalMs} ms]`);
             return res.json(json);
         }
 
@@ -114,6 +125,9 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
             if(ttftMs === null && /"content":"[^"]/.test(chunkText)){
                 ttftMs = Math.round(performance.now() - startTime);
             }
+            if(/"content":"[^"]/.test(chunkText)) {
+                compleitonTokens++;
+            }
             res.write(chunkText);
         }
         res.end();
@@ -134,6 +148,16 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
     finally{
         //Release the concurrency slot so the next request can proceed
         gpuQueue.release();
+        const totalDurationMs = Math.round(performance.now() - startTime);
+        logRequestMetrics({
+            apiKeyId,
+            model: body.model,
+            promptTokens,
+            compleitonTokens,
+            ttftMs,
+            totalDurationMs,
+            statusCode,
+        });
     }
 
 
