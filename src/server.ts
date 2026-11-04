@@ -3,12 +3,10 @@ import type { Request, Response } from 'express';
 import { ChatCompletionSchema } from './schemas';
 import { BoundedQueue, QueueFullError, QueueTimeoutError } from './queue';
 import { initDb, logRequestMetrics } from './db';
-import { authenticateApiKey, AuthenticateRequest } from './auth.ts';
+import { authenticateApiKey } from './auth';
+import type { AuthenticatedRequest } from './auth';
 
 const app = express();
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {console.log(`server listening on port : ${PORT}`)});
 
 app.use(express.json());
 const gpuQueue = new BoundedQueue(2, 5, 10_000);
@@ -50,9 +48,21 @@ app.post('/v1/chat/completions', authenticateApiKey, async (req: AuthenticatedRe
     }
     const body = parsed.data;
 
+    // 1. Create the controller and start watching for disconnects FIRSt
+    const abortController = new AbortController();
+    //read abt this abortController and the req.on() thing
+    //changed req.on() to res.on() .. study this later
+    res.on('close', () => {
+        if(!res.writableEnded){
+            console.warn('[Gateway] client disconnected! cancelling Ollama request');
+            abortController.abort();
+        }
+    });
+    //this below line is also added 
+
     //checking the queue availability
     try{
-        await gpuQueue.acquire();
+        await gpuQueue.acquire(abortController.signal);
     }catch (err) {
         if(err instanceof QueueFullError || err instanceof QueueTimeoutError){
             return res.status(503).json({
@@ -61,17 +71,16 @@ app.post('/v1/chat/completions', authenticateApiKey, async (req: AuthenticatedRe
         }
         return res.status(500).json({ error: 'Queue error' });
     }
-    const abortController = new AbortController();
-    //read abt this abortController and the req.on() thing
-    req.on('close', () => {
-        if(!res.writableEnded){
-            console.warn('[Gateway] client disconnected! cancelling Ollama request');
-            abortController.abort();
-        }
-    });
+
+    if(abortController.signal.aborted){
+        gpuQueue.release();
+        return;
+    }
+    
+    
 
     let promptTokens = 0;
-    let compleitonTokens = 0;
+    let completionTokens = 0;
     let ttftMs: number | null = null;
     let statusCode = 200;
 
@@ -97,7 +106,7 @@ app.post('/v1/chat/completions', authenticateApiKey, async (req: AuthenticatedRe
         if(!body.stream){
             const json = await ollamaRes.json();
             promptTokens = json.usage?.prompt_tokens ?? 0;
-            compleitonTokens = json.usage?.completion-tokens ?? 0;
+            completionTokens = json.usage?.completion_tokens ?? 0;
             //const totalMs = Math.round(performance.now() - startTime);
             //console.log(`[Non streaming completed in ${totalMs} ms]`);
             return res.json(json);
@@ -113,7 +122,7 @@ app.post('/v1/chat/completions', authenticateApiKey, async (req: AuthenticatedRe
 
         const reader = ollamaRes.body.getReader();
         const decoder  = new TextDecoder();
-        let ttftMs: number | null = null;
+        //let ttftMs: number | null = null;
 
         while(true) {
             const { done, value } = await reader.read();
@@ -126,7 +135,7 @@ app.post('/v1/chat/completions', authenticateApiKey, async (req: AuthenticatedRe
                 ttftMs = Math.round(performance.now() - startTime);
             }
             if(/"content":"[^"]/.test(chunkText)) {
-                compleitonTokens++;
+                completionTokens++;
             }
             res.write(chunkText);
         }
@@ -153,7 +162,7 @@ app.post('/v1/chat/completions', authenticateApiKey, async (req: AuthenticatedRe
             apiKeyId,
             model: body.model,
             promptTokens,
-            compleitonTokens,
+            completionTokens,
             ttftMs,
             totalDurationMs,
             statusCode,
@@ -162,3 +171,13 @@ app.post('/v1/chat/completions', authenticateApiKey, async (req: AuthenticatedRe
 
 
 });
+const PORT = process.env.PORT || 3000;
+
+initDb()
+    .then(() => {
+        app.listen(PORT, () => console.log(`Gateway listening on port ${PORT}`));
+    })
+    .catch((err) => {
+        console.error(`Database initialization Failed due to ${err} Soryy..`, );
+        process.exit(1);
+    });
