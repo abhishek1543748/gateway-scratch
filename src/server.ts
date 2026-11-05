@@ -1,7 +1,7 @@
 import express from 'express';
 import type { Request, Response } from 'express';
 import { ChatCompletionSchema } from './schemas';
-import { BoundedQueue, QueueFullError, QueueTimeoutError } from './queue';
+import { BoundedQueue, QueueFullError, QueueTimeoutError, QueueAbortedError } from './queue';
 import { initDb, logRequestMetrics } from './db';
 import { authenticateApiKey } from './auth';
 import type { AuthenticatedRequest } from './auth';
@@ -24,7 +24,7 @@ app.get('/healthz', async (_req: Request, res: Response) => {
     }
 });
 
-app.get('/v1/models', async (_req: Request, res: Response) => {
+app.get('/v1/models', authenticateApiKey, async (_req: Request, res: Response) => {
     try{
         const upstreamRes = await fetch(`${OLLAMA_BASE_URL}/v1/models`);
         const data = await upstreamRes.json();
@@ -43,7 +43,7 @@ app.post('/v1/chat/completions', authenticateApiKey, async (req: AuthenticatedRe
     const parsed = ChatCompletionSchema.safeParse(req.body);
     if(!parsed.success){
         return res.status(400).json({
-            error: { messages: 'Bad Request', details: parsed.error.issues }
+            error: { message: 'Bad Request', details: parsed.error.issues }
         });
     }
     const body = parsed.data;
@@ -64,6 +64,7 @@ app.post('/v1/chat/completions', authenticateApiKey, async (req: AuthenticatedRe
     try{
         await gpuQueue.acquire(abortController.signal);
     }catch (err) {
+        if (err instanceof QueueAbortedError) return;
         if(err instanceof QueueFullError || err instanceof QueueTimeoutError){
             return res.status(503).json({
                 error : {message: err.message, type: 'server_overloaded' },
@@ -76,8 +77,6 @@ app.post('/v1/chat/completions', authenticateApiKey, async (req: AuthenticatedRe
         gpuQueue.release();
         return;
     }
-    
-    
 
     let promptTokens = 0;
     let completionTokens = 0;
@@ -106,7 +105,7 @@ app.post('/v1/chat/completions', authenticateApiKey, async (req: AuthenticatedRe
         if(!body.stream){
             const json = await ollamaRes.json();
             promptTokens = json.usage?.prompt_tokens ?? 0;
-            completionTokens = json.usage?.completion_tokens ?? 0;
+            completionTokens = json.usage?.completion_tokens ?? 0;//completion_tokens give network chunks bot tokens
             //const totalMs = Math.round(performance.now() - startTime);
             //console.log(`[Non streaming completed in ${totalMs} ms]`);
             return res.json(json);
@@ -146,9 +145,11 @@ app.post('/v1/chat/completions', authenticateApiKey, async (req: AuthenticatedRe
     catch(err : any){
         if(err.name === 'AbortError'){
             console.log('[Gateway] Upstream generation aborted cleanly.');
+            statusCode = 499; //adding this as this was seen as a 200 earlier.ai
         }
         else{
             console.error('[Gateway] Upstream error', err);
+            statusCode = 502;
             if(!res.headersSent){
                 res.status(502).json({ error: 'Inference engine communication failed'});
             }
@@ -177,7 +178,7 @@ initDb()
     .then(() => {
         app.listen(PORT, () => console.log(`Gateway listening on port ${PORT}`));
     })
-    .catch((err) => {
+    .catch((err: any) => {
         console.error(`Database initialization Failed due to ${err} Soryy..`, );
         process.exit(1);
     });

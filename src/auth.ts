@@ -1,4 +1,4 @@
-import { Request, Response, NextFunction } from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { pool } from './db';
 
@@ -32,10 +32,12 @@ const rawKey = authHeader.replace('Bearer ', '').trim();
 const keyHash = crypto.createHash('sha256').update(rawKey).digest('hex');
 try{
     const result = await pool.query(
-
+        'SELECT id, name, rpm_limit, is_active FROM api_keys WHERE key_hash = $1',
+        [keyHash]
     );
     if(result.rows.length === 0 || !result.rows[0].is_active){
-        return result.status(401).json({
+        //below typo fixed ,earlier --> result.status
+        return res.status(401).json({
             error: {
                 message: 'Invalid or deactivated API key',
                 type: 'authentication_error',

@@ -9,11 +9,13 @@ async function createKey() {
     const keyHash = crypto.createHash('sha256').update(rawKey).digest('hex');
 
     const result = await pool.query(
-
+        'INSERT INTO api_keys (name, key_hash) VALUES ($1, $2) RETURNING id',
+        [keyName, keyHash]
     );
-
+    console.log(`${rawKey}`);
     console.log('\n=============================');
     console.log('API Key Generated & Stored in Postgres!');
+    
     
     await pool.end();
 }
