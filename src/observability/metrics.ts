@@ -9,7 +9,7 @@ client.collectDefaultMetrics({ register });
 
 export const ttftSeconds = new client.Histogram({
     name: 'llm_ttft_seconds',
-    help: 'Time to first token, measured from req arrival at the gateway'
+    help: 'Time to first token, measured from req arrival at the gateway',
     labelNames: ['model', 'api_key'] as const,
     buckets: [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30],
     registers: [register],
@@ -55,8 +55,8 @@ export const httpRequestsTotal = new client.Counter({
 
 export function registerQueueGauges(queue: BoundedQueue){
     new client.Gauge({
-        name:'',
-        help: '',
+        name:'llm_queue_waiting_requests',
+        help: 'Requests currently waiting in the concurrency queue',
         registers: [register],
         collect() { this.set(queue.getStats().waiting); },
     });

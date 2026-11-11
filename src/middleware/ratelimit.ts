@@ -1,10 +1,10 @@
 import { randomUUID } from 'crypto';
 import type { Response, NextFunction } from 'express';
 import type { Redis } from 'ioredis';
-import { redis } from './redis';
-import { config } from './config';
-import { rateLimitedTotal } from './metrics';  
-import type { AuthenticatedRequest } from './auth';
+import { redis } from '../infra/redis.js';
+import { config } from '../config.js';
+import { rateLimitedTotal } from '../observability/metrics';  
+import type { AuthenticatedRequest } from '../middleware/auth';
 
 //the RPM Lua Script(implementing Sliding window)
 
@@ -17,7 +17,7 @@ local limit  = tonumber(ARGV[1])
 local window = tonumber(ARGV[2])
 local member = ARGV[3]
 local t = redis.call('TIME')
-local now = tonumber(t[1]) * 1000 + math.floor(tonumbert[2] / 1000)
+local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
 redis.call('ZREMRANGEBYSCORE', key, '-inf', now - window)
 local count = redis.call('ZCARD', key)
 if count < limit then
@@ -135,7 +135,7 @@ export function sendRateLimited(res: Response, type: 'rpm' | 'tpm', result: Limi
     rateLimitedTotal.inc({ type });
     res.setHeader('Retry-After', String(result.retryAfter));
     return res.status(429).json({
-        error: { message, type: 'rate_limit_error', code: `$(type)_limit_exceeded` }
+        error: { message, type: 'rate_limit_error', code: `${type}_limit_exceeded` }
     });
 }
 

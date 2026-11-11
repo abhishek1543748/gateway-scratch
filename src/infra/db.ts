@@ -36,6 +36,8 @@ export async function initDb() {
 
             CREATE INDEX IF NOT EXISTS idx_request_logs_key_time
                 ON request_logs (api_key_id, created_at);
+            ALTER TABLE api_keys
+                ADD COLUMN IF NOT EXISTS tpm_limit INTEGER NOT NULL DEFAULT 20000;
             `)
     }finally {
         client.release()
@@ -68,7 +70,8 @@ export function logRequestMetrics(data: {
                     data.totalDurationMs,
                     data.statusCode,
                 ]
-
+                //this above way using $ signs is called "PARAMETERIZED WAY OF INSERTING" 
+                //to avoid SQL injection attacks on the DB
             )
         } catch(err) {
             console.error('[Database] Failed to log request: ', err);

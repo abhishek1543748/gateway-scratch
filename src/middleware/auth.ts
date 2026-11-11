@@ -1,12 +1,13 @@
 import type { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
-import { pool } from './db';
+import { pool } from '../infra/db.js';
 
 export interface  AuthenticatedRequest extends Request{
     apiKey?: {
         id: number;
         name: string;
         rpmLimit: number;
+        tpmLimit: number;
     };
 }
 
@@ -32,7 +33,7 @@ const rawKey = authHeader.replace('Bearer ', '').trim();
 const keyHash = crypto.createHash('sha256').update(rawKey).digest('hex');
 try{
     const result = await pool.query(
-        'SELECT id, name, rpm_limit, is_active FROM api_keys WHERE key_hash = $1',
+        'SELECT id, name, rpm_limit, tpm_limit, is_active FROM api_keys WHERE key_hash = $1',
         [keyHash]
     );
     if(result.rows.length === 0 || !result.rows[0].is_active){
@@ -50,6 +51,7 @@ try{
         id: result.rows[0].id,
         name: result.rows[0].name,
         rpmLimit: result.rows[0].rpm_limit,
+        tpmLimit:  result.rows[0].tpm_limit,
     };
 
     next();
